@@ -1,0 +1,4 @@
+opencv-contrib-python
+numpy
+pyzmq
+# pyorbbecsdk must match your platform/Python; install from Orbbec’s official wheel
