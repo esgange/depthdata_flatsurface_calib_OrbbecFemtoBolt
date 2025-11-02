@@ -5,9 +5,9 @@ Orbbec Viewer (RGB top | Depth/Height bottom)
 
 Features
 - T toggles between HEIGHT and DEPTH modes.
-- P toggles probe (green crosshair) on/off; WASD/Arrow keys move it with press acceleration.
+- P toggles probe (green crosshair) on/off; WASD moves it with press acceleration.
 - Top-right: numeric readout (Height mm or Depth mm) only.
-- Top-left: mode + context-aware controls/instructions + active mode range (min–max in mm).
+- Top-left: mode + context-aware controls/instructions.
 - C triggers calibration capture (requires 4 ArUco markers with IDs 1–4 visible).
 - If C is pressed without all 4 markers visible, a centered red banner appears for ~3s:
   "Need 4 visible markers. IDs 1,2,3,4"
@@ -16,22 +16,24 @@ Features
 Controls
   T               Toggle mode (HEIGHT <-> DEPTH)
   P               Toggle probe on/off (green crosshair)
-  W A S D         Move probe (accelerates while holding; max speed in ~2s)
-  Arrow Keys      Move probe (accelerates while holding; max speed in ~2s)
+  W A S D         Move probe (accelerates while holding)
   C               Start (re)calibration when 4 ArUco markers (IDs 1–4) are visible
   Q               Quit
 
 Tunables (env)
   MID_PROBE_STEP                 Base step in pixels (default: 3)
-  MID_ACCEL_GAIN                 Acceleration gain per second; if not set, derived from MID_ACCEL_TIME_TO_MAX_S
+  MID_ACCEL_GAIN                 Acceleration gain per second (default: 2.5)
   MID_ACCEL_MAX_MULT             Max acceleration multiplier (default: 8.0)
-  MID_ACCEL_TIME_TO_MAX_S        Seconds to reach max acceleration (default: 2.0)
   MID_ACCEL_REPEAT_GRACE_S       Max delay between repeats to continue hold (default: 0.12)
   MID_ACCEL_RELEASE_TIMEOUT_S    Stop hold after no repeat for this many seconds (default: 0.25)
   MID_DEPTH_VIZ_MIN_M            Depth visualization min (m)
   MID_DEPTH_VIZ_MAX_M            Depth visualization max (m)
   MID_HEIGHT_VIZ_MIN_M           Height visualization min (m)
   MID_HEIGHT_VIZ_MAX_M           Height visualization max (m)
+
+  # Added for emitter control:
+  MID_LASER_ENABLE               "1" to enable emitter, "0" to disable (default: "1")
+  MID_LASER_LEVEL                Integer energy level; clamped to device range (default: "2")
 """
 
 import os
@@ -56,7 +58,7 @@ ext_dir = os.path.join(_deps, "extensions")
 if os.path.isdir(ext_dir):
     print(f"load extensions from {ext_dir}")
 
-from pyorbbecsdk import Pipeline, Config, OBSensorType, AlignFilter, OBStreamType
+from pyorbbecsdk import Pipeline, Config, OBSensorType, AlignFilter, OBStreamType, OBPropertyID  # [ADDED OBPropertyID]
 
 # -----------------------------------------------------------------------------
 # Configuration (env tunables)
@@ -73,10 +75,10 @@ LOG_LEVEL = os.environ.get("MID_LOG_LEVEL", "INFO")
 ARUCO_DICT = cv2.aruco.DICT_4X4_50
 ARUCO_IDS = {1, 2, 3, 4}
 
-DEPTH_VIZ_MIN_M  = float(os.environ.get("MID_DEPTH_VIZ_MIN_M",  "0.20"))
-DEPTH_VIZ_MAX_M  = float(os.environ.get("MID_DEPTH_VIZ_MAX_M",  "1.00"))
+DEPTH_VIZ_MIN_M  = float(os.environ.get("MID_DEPTH_VIZ_MIN_M",  "0.200"))
+DEPTH_VIZ_MAX_M  = float(os.environ.get("MID_DEPTH_VIZ_MAX_M",  "1.000"))
 HEIGHT_VIZ_MIN_M = float(os.environ.get("MID_HEIGHT_VIZ_MIN_M", "0.001"))
-HEIGHT_VIZ_MAX_M = float(os.environ.get("MID_HEIGHT_VIZ_MAX_M", "0.20"))
+HEIGHT_VIZ_MAX_M = float(os.environ.get("MID_HEIGHT_VIZ_MAX_M", "0.150"))
 
 BLOB_ENABLE      = os.environ.get("MID_BLOB_ENABLE", "1") != "0"
 BLOB_TOL_MM      = int(os.environ.get("MID_BLOB_TOL_MM", "10"))
@@ -87,6 +89,10 @@ CAL_MIN_VALID = int(os.environ.get("MID_CAL_MIN_VALID", "500"))
 
 WINDOW_TITLE = "Orbbec Viewer (RGB ↑ | Depth/Height ↓)"
 CAL_FILE = os.environ.get("MID_CAL_FILE", "calibration_plane.json")
+
+# ---- [ADDED] Emitter control tunables ----
+LASER_ENABLE = os.environ.get("MID_LASER_ENABLE", "1") != "0"
+LASER_LEVEL  = int(os.environ.get("MID_LASER_LEVEL", "6"))
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -421,18 +427,11 @@ class MiddleService:
         # Probe (toggle) + movement acceleration
         self.probe_active = False
         self.cursor_uv = None                                 # (u, v) in depth alignment space
-        self.probe_step = int(os.environ.get("MID_PROBE_STEP", "3"))
+        self.probe_step = int(os.environ.get("MID_PROBE_STEP", "5"))
         self.last_probe_sample = None
 
-        # --- Acceleration tuning: reach max speed in ~2s by default ---
-        self.accel_max_mult = float(os.environ.get("MID_ACCEL_MAX_MULT", "8.0"))
-        accel_time_to_max_s = float(os.environ.get("MID_ACCEL_TIME_TO_MAX_S", "2.0"))
-        if "MID_ACCEL_GAIN" in os.environ:
-            self.accel_gain = float(os.environ.get("MID_ACCEL_GAIN", "3.5"))
-        else:
-            # Derive gain so that: 1 + gain * t_max = accel_max_mult  ->  gain = (M-1)/t_max
-            self.accel_gain = (self.accel_max_mult - 1.0) / max(0.001, accel_time_to_max_s)
-
+        self.accel_gain = float(os.environ.get("MID_ACCEL_GAIN", "5.0"))
+        self.accel_max_mult = float(os.environ.get("MID_ACCEL_MAX_MULT", "50.0"))
         self.accel_repeat_grace_s = float(os.environ.get("MID_ACCEL_REPEAT_GRACE_S", "0.12"))
         self.accel_release_timeout_s = float(os.environ.get("MID_ACCEL_RELEASE_TIMEOUT_S", "0.25"))
 
@@ -498,6 +497,33 @@ class MiddleService:
         self._last_key = -1
         return k
 
+    # ---- [ADDED] Emitter settings helper ----
+    def _apply_emitter_settings(self):
+        """Best-effort apply emitter (laser) enable + energy level from env."""
+        try:
+            dev = self.pipeline.get_device()
+        except Exception as e:
+            logger.debug(f"Emitter settings skipped (no device yet): {e}")
+            return
+
+        # Enable/disable laser (emitter)
+        try:
+            dev.set_bool_property(OBPropertyID.OB_PROP_LASER_BOOL, bool(LASER_ENABLE))
+            logger.info("Laser emitter %s", "ENABLED" if LASER_ENABLE else "DISABLED")
+        except Exception as e:
+            logger.warning(f"Setting OB_PROP_LASER_BOOL failed or unsupported: {e}")
+
+        # Set energy/power level (clamped to device range)
+        try:
+            r = dev.get_int_property_range(OBPropertyID.OB_PROP_LASER_ENERGY_LEVEL_INT)
+            lvl = int(np.clip(LASER_LEVEL, r.min, r.max))
+            if lvl != LASER_LEVEL:
+                logger.info("Clamping MID_LASER_LEVEL=%s to device range [%s..%s]", LASER_LEVEL, r.min, r.max)
+            dev.set_int_property(OBPropertyID.OB_PROP_LASER_ENERGY_LEVEL_INT, lvl)
+            logger.info("Laser energy level set to %d", lvl)
+        except Exception as e:
+            logger.warning(f"Setting OB_PROP_LASER_ENERGY_LEVEL_INT failed or unsupported: {e}")
+
     def _setup_camera(self):
         """Configure and start Orbbec pipeline; align depth->color."""
         try:
@@ -511,8 +537,21 @@ class MiddleService:
 
             self.pipeline.enable_frame_sync()
             self.align_filter = AlignFilter(align_to_stream=OBStreamType.COLOR_STREAM)
+
+            # [ADDED] Try to apply emitter settings before start (some stacks allow it here)
+            try:
+                self._apply_emitter_settings()
+            except Exception as e:
+                logger.debug(f"Pre-start emitter apply skipped: {e}")
+
             self.pipeline.start(self.config)
             logger.info("Pipeline started (aligned depth -> color).")
+
+            # [ADDED] Apply again after start (some firmwares require streaming state)
+            try:
+                self._apply_emitter_settings()
+            except Exception as e:
+                logger.debug(f"Post-start emitter apply skipped: {e}")
 
             if self.intrinsics is None:
                 self.intrinsics = try_get_intrinsics(self.depth_profile)
@@ -723,7 +762,7 @@ class MiddleService:
 
                 if first_log:
                     logger.info(f"RGB {color.shape[1]}x{color.shape[0]} | Depth(aligned) {d_w}x{d_h}")
-                    logger.info("Controls: T mode | P probe | WASD/Arrows move (accelerates) | C calibrate | Q quit")
+                    logger.info("Controls: T mode | P probe | WASD move (accelerates) | C calibrate | Q quit")
                     first_log = False
 
                 # Intrinsics (best-effort)
@@ -791,17 +830,11 @@ class MiddleService:
                         self.last_probe_sample = None
                         self.move_is_holding = False
 
-                # Arrow keycodes (Qt backend): left=81, up=82, right=83, down=84
-                ARROW_LEFT, ARROW_UP, ARROW_RIGHT, ARROW_DOWN = 81, 82, 83, 84
                 move_map = {
                     ord('a'): (-self.probe_step, 0),
                     ord('d'): ( self.probe_step, 0),
                     ord('w'): (0, -self.probe_step),
                     ord('s'): (0,  self.probe_step),
-                    ARROW_LEFT: (-self.probe_step, 0),
-                    ARROW_RIGHT:( self.probe_step, 0),
-                    ARROW_UP:   (0, -self.probe_step),
-                    ARROW_DOWN: (0,  self.probe_step),
                 }
 
                 # Discrete movement key pressed?
@@ -834,12 +867,6 @@ class MiddleService:
                         self.move_is_holding = False
                 # ----------------------------------------------------
 
-                # Precompute viz ranges in mm for display text
-                dmin_mm = int(DEPTH_VIZ_MIN_M * 1000)
-                dmax_mm = int(DEPTH_VIZ_MAX_M * 1000)
-                hmin_mm = int(HEIGHT_VIZ_MIN_M * 1000)
-                hmax_mm = int(HEIGHT_VIZ_MAX_M * 1000)
-
                 # --- Compute height (if possible) ---
                 z_m = depth_mm.astype(np.float32) / 1000.0
                 height_mm = None
@@ -863,6 +890,8 @@ class MiddleService:
                     else:
                         height_mm = height_mm_raw
                     # Clamp to viz range
+                    hmin_mm = int(HEIGHT_VIZ_MIN_M * 1000)
+                    hmax_mm = int(HEIGHT_VIZ_MAX_M * 1000)
                     in_range = (height_mm >= hmin_mm) & (height_mm <= hmax_mm)
                     height_mm = np.where(in_range, height_mm, 0).astype(np.uint16)
 
@@ -924,15 +953,19 @@ class MiddleService:
                         )
                     else:
                         depth_mm_filled = depth_mm
+                    dmin_mm = int(DEPTH_VIZ_MIN_M * 1000)
+                    dmax_mm = int(DEPTH_VIZ_MAX_M * 1000)
                     in_range = (depth_mm_filled >= dmin_mm) & (depth_mm_filled <= dmax_mm)
                     depth_mm_viz = np.where(in_range, depth_mm_filled, 0).astype(np.uint16)
                     if marker_mask.any():
                         depth_mm_viz[marker_mask == 255] = 0
                     heat = draw_heatmap_mm(depth_mm_viz, dmin_mm, dmax_mm)
                 else:
+                    hmin_mm = int(HEIGHT_VIZ_MIN_M * 1000)
+                    hmax_mm = int(HEIGHT_VIZ_MAX_M * 1000)
                     heat = draw_heatmap_mm(height_mm, hmin_mm, hmax_mm)
 
-                # Compose top-left instructions (mode-aware) + range for active (effective) mode
+                # Compose top-left instructions (mode-aware)
                 instruct = []
                 if selected_mode == "height":
                     if height_mm is None:
@@ -942,19 +975,13 @@ class MiddleService:
                 else:
                     instruct.append(("MODE: DEPTH", (180, 255, 180)))
 
-                # Add active range line (based on effective display mode)
-                if effective_mode == "depth":
-                    instruct.append((f"Range: {dmin_mm}–{dmax_mm} mm", (200, 255, 200)))
-                else:
-                    instruct.append((f"Range: {hmin_mm}–{hmax_mm} mm", (200, 255, 200)))
-
                 # Calibration capture progress hint
                 if self._calibration_mode and self._arm_calibration:
                     with self._accum_lock:
                         left = max(0, CAL_FRAMES - len(self._accum_frames))
                     instruct.append((f"CALIBRATING: capturing frames... remaining: {left}", (255, 255, 255)))
 
-                instruct.append(("Controls: T mode | P probe | WASD/Arrows move (accelerates) | C calibrate | Q quit",
+                instruct.append(("Controls: T mode | P probe | WASD move (accelerates) | C calibrate | Q quit",
                                  (200, 200, 255)))
 
                 # Annotate RGB with markers + instructions (top-left only)
@@ -1050,10 +1077,6 @@ class MiddleService:
                             "ring_px": int(BLOB_RING_PX),
                             "min_border": int(BLOB_MIN_BORDER),
                         },
-                        "acceleration": {
-                            "max_mult": float(self.accel_max_mult),
-                            "gain_per_s": float(self.accel_gain)
-                        }
                     }
                 }
 
@@ -1094,4 +1117,3 @@ if __name__ == "__main__":
         pass
     finally:
         svc.stop()
-

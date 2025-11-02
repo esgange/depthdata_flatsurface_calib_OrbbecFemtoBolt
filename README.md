@@ -1,4 +1,3 @@
-
 # Orbbec Viewer — Quick User Guide
 
 **RGB top | Depth/Height bottom**  
@@ -13,8 +12,8 @@ Keyboard-only viewer with live overlays and a simple probe. Calibration uses 4 A
 - No mouse tools: this app is intentionally minimal.
 
 **Overlays**
-- **Top‑left:** current mode + context instructions **and the active mode’s numeric range** in mm.
-- **Top‑right:** when the probe is enabled, shows a single numeric readout (`Depth: N mm` or `Height: N mm`).
+- **Top-left:** current mode + context instructions **and the active mode’s numeric range** in mm.
+- **Top-right:** when the probe is enabled, shows a single numeric readout (`Depth: N mm` or `Height: N mm`).
 - **Center (temporary):** error banner when calibration is requested but not all markers are visible — *"Need 4 visible markers. IDs 1,2,3,4"*.
 
 ---
@@ -25,7 +24,6 @@ Keyboard-only viewer with live overlays and a simple probe. Calibration uses 4 A
 | **T** | Toggle **HEIGHT ↔ DEPTH** |
 | **P** | Toggle **probe** (green crosshair) |
 | **W / A / S / D** | Move probe (accelerates while holding) |
-| **Arrow keys** | Move probe (accelerates while holding) |
 | **C** | Start (re)calibration when **ArUco IDs 1,2,3,4** are visible |
 | **Q** | Quit |
 
@@ -113,7 +111,7 @@ A resizable window titled **“Orbbec Viewer (RGB ↑ | Depth/Height ↓)”** w
 
 ## Probe
 - Toggle with **P**. A **green crosshair** appears on both panels.
-- Move with **W/A/S/D** or **arrow keys**. Holding a direction accelerates up to `MID_ACCEL_MAX_MULT × MID_PROBE_STEP` in ~`MID_ACCEL_TIME_TO_MAX_S` seconds.
+- Move with **W/A/S/D**. Holding a direction accelerates up to `MID_ACCEL_MAX_MULT × MID_PROBE_STEP` in ~`MID_ACCEL_TIME_TO_MAX_S` seconds.
 - The **top-right** shows a single value: `Depth: N mm` in DEPTH mode or `Height: N mm` in HEIGHT mode.
 
 ---
@@ -170,8 +168,3 @@ The app publishes one JSON message per frame on `MID_PUB`.
 - The app attempts to read camera **intrinsics** from the SDK; if available, they’re saved in `calibration_plane.json`.
 - Marker regions are masked out of the height/depth visualization to reduce bias.
 - Hole-filling (`MID_BLOB_*`) can be disabled by setting `MID_BLOB_ENABLE=0`.
-
----
-
-## License
-Internal tool. If you intend to distribute, add a proper license file.
